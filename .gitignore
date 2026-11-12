@@ -1,1 +1,7 @@
-# Nothing that is not part of the payload.
+# The payload's own files are the only thing this repository holds. Notes
+# written while working here are not part of it.
+*.txt
+*.log
+rootfs/
+webview-*-arm64.erofs
+plugins.json
