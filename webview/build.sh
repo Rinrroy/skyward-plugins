@@ -67,6 +67,14 @@ CONF
 sudo rm -rf "$ROOT/var/lib/apt/lists" "$ROOT/var/cache/apt" "$ROOT/usr/share/doc" "$ROOT/usr/share/man"
 
 sudo du -sh "$ROOT"
-sudo mkfs.erofs -zzstd -T 0 "$OUT" "$ROOT"
+# Which compressor erofs-utils can reach depends on how it was built; an image
+# that is merely larger is worth more than a run that stops here.
+if ! sudo mkfs.erofs -zlz4hc,9 "$OUT" "$ROOT"; then
+    echo "no lz4hc; trying zstd"
+    if ! sudo mkfs.erofs -zzstd "$OUT" "$ROOT"; then
+        echo "no zstd either; packing it plain"
+        sudo mkfs.erofs "$OUT" "$ROOT"
+    fi
+fi
 ls -l "$OUT"
 sha256sum "$OUT"
