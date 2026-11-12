@@ -26,15 +26,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build the rootfs and squash it
+      - name: Build the rootfs and pack it
         run: |
           chmod +x webview/build.sh
-          OUT="webview-${{ inputs.version }}-arm64.squashfs" webview/build.sh
+          OUT="webview-${{ inputs.version }}-arm64.erofs" webview/build.sh
 
       - name: Write the index Skyward reads
         run: |
           set -euo pipefail
-          IMAGE="webview-${{ inputs.version }}-arm64.squashfs"
+          IMAGE="webview-${{ inputs.version }}-arm64.erofs"
           SHA=$(sha256sum "$IMAGE" | cut -d' ' -f1)
           SIZE=$(stat -c %s "$IMAGE")
           URL="https://github.com/${{ github.repository }}/releases/download/webview-${{ inputs.version }}/$IMAGE"
@@ -48,7 +48,7 @@ jobs:
               "url": url,
               "sha256": sha,
               "size": size,
-              "format": "squashfs",
+              "format": "erofs",
               "program": "/opt/skyward/start.sh",
           }
           json.dump({"version": 1, "plugins": [plugin]}, sys.stdout, ensure_ascii=False, indent=2)
@@ -62,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="webview-${{ inputs.version }}"
-          IMAGE="webview-${{ inputs.version }}-arm64.squashfs"
+          IMAGE="webview-${{ inputs.version }}-arm64.erofs"
           gh release create "$TAG" "$IMAGE" plugins.json \
             --title "浏览器 ${{ inputs.version }}" \
             --notes "Skyward 的浏览器插件。在恢复里解密 data、连上网络后，从插件页下载。"
@@ -71,5 +71,5 @@ jobs:
         with:
           name: webview-${{ inputs.version }}
           path: |
-            webview-*.squashfs
+            webview-*-arm64.erofs
             plugins.json

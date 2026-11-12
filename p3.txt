@@ -1,0 +1,2 @@
+To ssh://github.com/Rinrroy/skyward-plugins.git
+   864ade2..4821b8b  HEAD -> main
