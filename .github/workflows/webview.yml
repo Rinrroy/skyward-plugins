@@ -9,6 +9,11 @@ on:
         description: "The plugin's version, as the tag and the file name will say"
         required: true
         default: "1.0"
+      publish:
+        description: "Attach the image to a release, or only build it and keep the artifact"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -51,6 +56,7 @@ jobs:
           cat plugins.json
 
       - name: Publish the image and the index
+        if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

@@ -1,0 +1,3 @@
+To ssh://github.com/Rinrroy/skyward-plugins.git
+ * [new branch]      HEAD -> main
+branch 'master' set up to track 'origin/main'.
