@@ -29,6 +29,44 @@ sudo chroot "$ROOT" apt-get install --yes --no-install-recommends \
     chromium weston libinput10 udev libgl1-mesa-dri libegl-mesa0 libgbm1 \
     fonts-noto-cjk fonts-noto-color-emoji ca-certificates xdg-utils
 
+# Probe: this kernel has CONFIG_VT unset, so libseat can never make a session
+# active and weston's DRM backend can never open the card. What is left is a
+# toolkit whose KMS path opens /dev/dri itself. Qt's eglfs does; ask the suite
+# whether it has Qt WebEngine and the platform plugin.
+echo "=== what the suite offers"
+sudo chroot "$ROOT" apt-cache policy python3-pyqt6.qtwebengine qt6-webengine-dev 2>&1 | head -20 || true
+echo "=== installing qt webengine"
+sudo chroot "$ROOT" apt-get install --yes --no-install-recommends \
+    python3-pyqt6.qtwebengine qt6-webengine-dev 2>&1 | tail -20 \
+    || echo "qt webengine is not installable here"
+echo "=== qt platform plugins"
+sudo chroot "$ROOT" sh -c 'ls /usr/lib/aarch64-linux-gnu/qt6/plugins/platforms/ 2>&1' || true
+echo "=== eglfs present?"
+sudo chroot "$ROOT" sh -c 'ls -l /usr/lib/aarch64-linux-gnu/qt6/plugins/platforms/libqeglfs.so 2>&1' || true
+echo "=== a web page rendered with no display at all"
+sudo tee "$ROOT/tmp/probe.py" > /dev/null <<'PY'
+import sys
+from PyQt6.QtCore import QUrl, QTimer
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+app = QApplication(sys.argv)
+view = QWebEngineView()
+view.resize(1280, 800)
+view.load(QUrl("https://cn.bing.com"))
+
+def done(ok):
+    print("load ok:", ok, "title:", view.title(), flush=True)
+    app.quit()
+
+view.loadFinished.connect(done)
+QTimer.singleShot(30000, app.quit)
+app.exec()
+print("qt webengine ran", flush=True)
+PY
+sudo chroot "$ROOT" env QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox" \
+    python3 /tmp/probe.py 2>&1 | tail -15 || echo "the offscreen render did not finish"
+
 # The default search engine, the home page, and nothing that phones home.
 sudo mkdir -p "$ROOT/etc/chromium/policies/managed"
 sudo tee "$ROOT/etc/chromium/policies/managed/skyward.json" > /dev/null <<'POLICY'
