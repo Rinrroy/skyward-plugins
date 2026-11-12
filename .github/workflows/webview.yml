@@ -1,0 +1,69 @@
+name: webview
+
+# The browser payload. Not a release of Skyward: an image Skyward downloads
+# as a plugin, built where there is an arm64 machine to build it on.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The plugin's version, as the tag and the file name will say"
+        required: true
+        default: "1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # debootstrap for arm64 wants to run arm64 code; a native runner costs
+    # nothing and avoids qemu entirely.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the rootfs and squash it
+        run: |
+          chmod +x webview/build.sh
+          OUT="webview-${{ inputs.version }}-arm64.squashfs" webview/build.sh
+
+      - name: Write the index Skyward reads
+        run: |
+          set -euo pipefail
+          IMAGE="webview-${{ inputs.version }}-arm64.squashfs"
+          SHA=$(sha256sum "$IMAGE" | cut -d' ' -f1)
+          SIZE=$(stat -c %s "$IMAGE")
+          URL="https://github.com/${{ github.repository }}/releases/download/webview-${{ inputs.version }}/$IMAGE"
+          MANIFEST=$(cat webview/manifest.json)
+          python3 - "$MANIFEST" "$SHA" "$SIZE" "$URL" <<'PY' > plugins.json
+          import json, sys
+          manifest, sha, size, url = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+          plugin = json.loads(manifest)
+          plugin["name"] = "webview"
+          plugin["payload"] = {
+              "url": url,
+              "sha256": sha,
+              "size": size,
+              "format": "squashfs",
+              "program": "/opt/skyward/start.sh",
+          }
+          json.dump({"version": 1, "plugins": [plugin]}, sys.stdout, ensure_ascii=False, indent=2)
+          PY
+          cat plugins.json
+
+      - name: Publish the image and the index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="webview-${{ inputs.version }}"
+          IMAGE="webview-${{ inputs.version }}-arm64.squashfs"
+          gh release create "$TAG" "$IMAGE" plugins.json \
+            --title "浏览器 ${{ inputs.version }}" \
+            --notes "Skyward 的浏览器插件。在恢复里解密 data、连上网络后，从插件页下载。"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webview-${{ inputs.version }}
+          path: |
+            webview-*.squashfs
+            plugins.json
