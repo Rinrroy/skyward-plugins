@@ -78,3 +78,12 @@ if ! sudo mkfs.erofs -zlz4hc,9 "$OUT" "$ROOT"; then
 fi
 ls -l "$OUT"
 sha256sum "$OUT"
+
+# Probe: is there a browser in this suite that drives DRM without a seat?
+sudo chroot "$ROOT" apt-get install --yes --no-install-recommends cog || echo "no cog in this suite"
+echo "=== cog help"
+sudo chroot "$ROOT" sh -c 'cog --help 2>&1 | head -30' || true
+echo "=== wpe libraries"
+sudo chroot "$ROOT" sh -c 'ls /usr/lib/aarch64-linux-gnu/ | grep -i -E "wpe|cog"' || true
+echo "=== cog platform plugins"
+sudo chroot "$ROOT" sh -c 'find /usr/lib -name "*cog*" -o -name "*wpe*" | head -30' || true
