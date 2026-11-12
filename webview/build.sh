@@ -29,6 +29,22 @@ sudo chroot "$ROOT" apt-get install --yes --no-install-recommends \
     chromium weston libinput10 udev libgl1-mesa-dri libegl-mesa0 libgbm1 \
     fonts-noto-cjk fonts-noto-color-emoji ca-certificates xdg-utils
 
+# Probe: this kernel has CONFIG_VT unset, so no compositor that goes through
+# libseat can work. An X server is the other old way onto a DRM card that needs
+# no seat at all: the modesetting driver opens /dev/dri itself and -sharevts
+# tells it not to touch a virtual terminal. The chromium already in this image
+# was built with the x11 ozone platform, so nothing else has to change.
+echo "=== what the suite offers for X"
+sudo chroot "$ROOT" apt-cache policy xserver-xorg-core xserver-xorg-input-libinput 2>&1 | head -20 || true
+echo "=== installing the X server"
+sudo chroot "$ROOT" apt-get install --yes --no-install-recommends \
+    xserver-xorg-core xserver-xorg-input-libinput xkb-data 2>&1 | tail -15 \
+    || echo "the X server is not installable here"
+echo "=== X drivers and input modules"
+sudo chroot "$ROOT" sh -c 'ls /usr/lib/xorg/modules/drivers/ 2>&1; ls /usr/lib/xorg/modules/input/ 2>&1' || true
+echo "=== Xorg version"
+sudo chroot "$ROOT" sh -c 'Xorg -version 2>&1 | head -8' || true
+
 # The default search engine, the home page, and nothing that phones home.
 sudo mkdir -p "$ROOT/etc/chromium/policies/managed"
 sudo tee "$ROOT/etc/chromium/policies/managed/skyward.json" > /dev/null <<'POLICY'
