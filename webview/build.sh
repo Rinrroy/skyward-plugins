@@ -10,6 +10,17 @@
 # session active and every compositor that goes through it dies before it makes
 # a socket. Xorg's modesetting driver opens /dev/dri itself and needs no seat.
 #
+# It has to be told what to ignore. The card this phone exposes advertises three
+# outputs besides the panel -- two "Virtual" connectors the vendor driver keeps
+# for screen recording, and a DisplayPort that is not plugged into anything --
+# and the modesetting driver puts all of them into one screen at their bounding
+# box. That is a 1920x3200 framebuffer for a 1440x3200 panel, and three CRTCs
+# sharing one card, and with it Xorg segfaults during screen initialisation
+# before it makes a socket. The config below turns the three of them off and
+# leaves the panel; glamor is off as well, because it refuses to run on llvmpipe
+# anyway ("Refusing to try glamor on llvmpipe") and the software path it falls
+# back to is the one that works.
+#
 # The image is erofs, not squashfs, and that is not a preference: the recovery
 # mounts the phone's own system partitions with erofs, so the kernel in the
 # ramdisk is certain to read it. squashfs depends on a kernel option Android
@@ -61,6 +72,57 @@ sudo tee "$ROOT/etc/chromium/policies/managed/skyward.json" > /dev/null <<'POLIC
   "PasswordManagerEnabled": false
 }
 POLICY
+
+# What Xorg is told about this phone's card: one screen, the panel only.
+sudo mkdir -p "$ROOT/etc/X11/xorg.conf.d"
+sudo tee "$ROOT/etc/X11/xorg.conf.d/20-skyward.conf" > /dev/null <<'XCONF'
+# Three outputs this phone's card advertises but this display does not use.
+# "Ignore" is what keeps them out of the screen: without it the modesetting
+# driver builds one screen at the bounding box of all four and dies.
+Section "Monitor"
+    Identifier "ignored-virtual-1"
+    Option "Ignore" "true"
+EndSection
+
+Section "Monitor"
+    Identifier "ignored-virtual-2"
+    Option "Ignore" "true"
+EndSection
+
+Section "Monitor"
+    Identifier "ignored-dp"
+    Option "Ignore" "true"
+EndSection
+
+Section "Monitor"
+    Identifier "panel"
+EndSection
+
+Section "Device"
+    Identifier "gpu"
+    Driver "modesetting"
+    # glamor refuses to initialise on llvmpipe and then falls back anyway; the
+    # fallback is the path that works, so it is asked for directly.
+    Option "AccelMethod" "none"
+    Option "ShadowFB" "true"
+    Option "EnablePageFlip" "false"
+    Option "Monitor-Virtual-1" "ignored-virtual-1"
+    Option "Monitor-Virtual-2" "ignored-virtual-2"
+    Option "Monitor-DP-1" "ignored-dp"
+    Option "Monitor-DSI-1" "panel"
+EndSection
+
+Section "Screen"
+    Identifier "screen"
+    Device "gpu"
+    DefaultDepth 24
+EndSection
+
+Section "ServerLayout"
+    Identifier "layout"
+    Screen "screen"
+EndSection
+XCONF
 
 # The launcher, and the mountpoints the recovery binds into.
 sudo mkdir -p "$ROOT/opt/skyward"
