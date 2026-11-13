@@ -106,18 +106,38 @@ echo "panel is ${WIDTH}x${HEIGHT}"
 echo "framebuffer before the browser draws: $(fingerprint)"
 
 if [ -x /usr/bin/xvkbd ]; then
-    (
-        sleep 6
-        exec /usr/bin/xvkbd -geometry "$((WIDTH * 9 / 10))x$((HEIGHT / 4))-0-0" \
-            -no-keypad -windowed
-    ) &
+    KEYBOARD=yes
+else
+    KEYBOARD=no
 fi
+
+# Asked for by the recovery, which owns the touch screen: "kbd on" puts the
+# keyboard on the page, "kbd off" takes it away again.
+keyboard() {
+    case "${1:-}" in
+        on)
+            if [ "$KEYBOARD" = yes ] && ! pgrep -x xvkbd > /dev/null 2>&1; then
+                /usr/bin/xvkbd -geometry "$((WIDTH * 9 / 10))x$((HEIGHT / 4))-0-0" \
+                    -no-keypad -no-jump-pointer >/dev/null 2>&1 &
+                echo "keyboard up"
+            fi
+            ;;
+        off)
+            pkill -x xvkbd > /dev/null 2>&1 && echo "keyboard down"
+            ;;
+    esac
+}
 
 if [ ! -x /usr/lib/chromium/chromium ]; then
     echo "no browser binary at /usr/lib/chromium/chromium"
     ls /usr/lib/chromium 2>&1
     exit 1
 fi
+
+# A page is shown to a site as the phone it is running on; without this the
+# mobile layouts, the touch behaviour and the login pages all answer as if this
+# were a desktop browser.
+UA="Mozilla/5.0 (Linux; Android 15; 2410DPN6CC) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36"
 
 echo "--- chromium, first attempt"
 /usr/lib/chromium/chromium \
@@ -126,6 +146,8 @@ echo "--- chromium, first attempt"
     --start-fullscreen \
     --window-position=0,0 \
     --window-size="$WIDTH,$HEIGHT" \
+    --user-agent="$UA" \
+    --touch-events=enabled \
     --no-sandbox \
     --no-first-run \
     --no-default-browser-check \
@@ -148,18 +170,26 @@ else
     mkfifo "$TOUCH" 2>/dev/null && echo "touch fifo made" || echo "no touch fifo"
 fi
 
-# One line per touch from the recovery: "x y down" or "x y up". The recovery
-# owns the touch screen, so this is how a finger reaches the page.
+# One line per touch from the recovery: "down x y", "move x y", "up x y",
+# "key Name" or "kbd on|off". The recovery owns the touch screen, so this is
+# how a finger reaches the page.
+#
+# The pipe is held open for reading and writing by this shell: a reader that
+# only ever opens it for reading sees the end of the file when the writer goes
+# away, stops reading, and then nobody is there for the next line — which is
+# what made every touch after the first one vanish.
 if [ -p "$TOUCH" ] && command -v xdotool > /dev/null 2>&1; then
     (
-        while read -r x y what; do
-            [ -z "${x:-}" ] && continue
+        exec 3<>"$TOUCH"
+        while read -r what a b <&3; do
             case "${what:-}" in
-                down) xdotool mousemove "$x" "$y" mousedown 1 ;;
+                down) xdotool mousemove "$a" "$b" mousedown 1 ;;
+                move) xdotool mousemove "$a" "$b" ;;
                 up)   xdotool mouseup 1 ;;
-                key)  xdotool key "$y" ;;
+                key)  xdotool key "$a" ;;
+                kbd)  keyboard "$a" ;;
             esac
-        done < "$TOUCH"
+        done
     ) &
 fi
 
