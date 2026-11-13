@@ -54,6 +54,12 @@ sudo chroot "$ROOT" apt-get install --yes --no-install-recommends \
 sudo chroot "$ROOT" apt-get install --yes --no-install-recommends xvkbd \
     || echo "no on-screen keyboard; the page can be looked at but not typed into"
 
+# A debugger, because the X server dies inside its own screen initialisation
+# and the address it reports is not a place: a stack trace is. The image pays
+# about thirty megabytes for being able to answer "where" instead of guessing.
+sudo chroot "$ROOT" apt-get install --yes --no-install-recommends gdb \
+    || echo "no debugger in the image; a crash will only be an address"
+
 # The default search engine, the home page, and nothing that phones home.
 sudo mkdir -p "$ROOT/etc/chromium/policies/managed"
 sudo tee "$ROOT/etc/chromium/policies/managed/skyward.json" > /dev/null <<'POLICY'

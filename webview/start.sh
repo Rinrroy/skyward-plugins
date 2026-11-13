@@ -7,23 +7,23 @@
 #
 # This kernel is built without virtual terminals -- `# CONFIG_VT is not set` --
 # and that closes one door for good: libseat marks a session active by opening
-# tty0, so no compositor that goes through it can ever open the card. Weston
-# dies with "Could not open VT for client" before it makes a socket, which is
-# why Chromium used to report "Failed to connect to Wayland display".
+# tty0, so no compositor that goes through it can ever open the card. An X
+# server needs no seat: its modesetting driver opens /dev/dri itself and
+# -sharevts keeps it out of VT handling.
 #
-# An X server needs no seat. Its modesetting driver opens /dev/dri itself and
-# -sharevts keeps it out of VT handling entirely, and the Chromium in this
-# image was built with the x11 ozone platform. So: X owns the panel, Chromium
-# draws into it.
-#
-# Everything here narrates itself: a browser that will not start is a question
-# whose answer is in this log, and the recovery copies it to internal storage
-# when the payload ends so that it can be read without the data partition.
+# It does not come up on the first try, and the log it leaves says why: it
+# reaches "Silken mouse enabled" during screen initialisation and segfaults at
+# address 0. So the X server is not started once and hoped for -- several
+# variations are tried in turn, each with a log of its own, and whichever makes
+# its socket is the one the browser gets. Everything is narrated into
+# /data/skyward/browser/logs/start.log, which the recovery copies to internal
+# storage when the payload ends.
 set -u
 
 LOG=/data/skyward/browser/logs
 mkdir -p "$LOG" 2>/dev/null
 exec >>"$LOG/start.log" 2>&1
+rm -f "$LOG"/xorg-*.log "$LOG"/x-*.out
 echo "--- start: $(date)"
 echo "kernel: $(uname -r 2>/dev/null)"
 
@@ -41,24 +41,16 @@ mountpoint -q /run 2>/dev/null || mount -t tmpfs -o mode=0755 tmpfs /run \
 mkdir -p /dev/shm
 mountpoint -q /dev/shm 2>/dev/null || mount -t tmpfs -o mode=1777 tmpfs /dev/shm \
     || echo "no tmpfs on /dev/shm"
-# The image is mounted read-only and Xorg wants somewhere to put compiled
-# keymaps; a tmpfs there keeps it from complaining about a read-only /var.
 mkdir -p /var/lib/xkb 2>/dev/null
 mountpoint -q /var/lib/xkb 2>/dev/null || mount -t tmpfs -o mode=0755 tmpfs /var/lib/xkb \
     || echo "no tmpfs on /var/lib/xkb"
 
 echo "--- the card, as the kernel sees it"
 ls -l /dev/dri 2>&1
-cat /sys/class/drm/card0/status 2>/dev/null
 for conn in /sys/class/drm/card0-*/status; do
     [ -r "$conn" ] && echo "$conn: $(cat "$conn")"
 done
 
-# udev, so libinput finds the touchscreen. `systemd-udevd` is not on PATH in
-# this suite: the file is a link to udevadm, a multicall binary, and it has to
-# be started by its real name. udevadm itself refuses inside a chroot
-# ("Running in chroot, ignoring request"), so the kernel is told about each
-# input device directly instead.
 if [ -x /usr/lib/systemd/systemd-udevd ] && ! pgrep -x systemd-udevd > /dev/null 2>&1; then
     /usr/lib/systemd/systemd-udevd --daemon || echo "udevd did not start"
 fi
@@ -68,19 +60,11 @@ done
 
 URL="${SKYWARD_START_URL:-https://cn.bing.com}"
 
-# Where the server is depends on how the suite packaged it, so it is looked for
-# rather than assumed: an image that answers "no X server" here would be a
-# browser that exits in the same second it starts.
 XORG=""
 for candidate in /usr/lib/xorg/Xorg /usr/bin/Xorg /usr/lib/xorg/Xorg.wrap; do
-    if [ -x "$candidate" ]; then
-        XORG="$candidate"
-        break
-    fi
+    if [ -x "$candidate" ]; then XORG="$candidate"; break; fi
 done
-if [ -z "$XORG" ] && command -v Xorg > /dev/null 2>&1; then
-    XORG=$(command -v Xorg)
-fi
+if [ -z "$XORG" ] && command -v Xorg > /dev/null 2>&1; then XORG=$(command -v Xorg); fi
 if [ -z "$XORG" ]; then
     echo "no X server in this payload; /usr/lib/xorg holds:"
     ls -l /usr/lib/xorg 2>&1
@@ -88,33 +72,78 @@ if [ -z "$XORG" ]; then
 fi
 echo "x server: $XORG"
 "$XORG" -version 2>&1 || true
-echo "modules: $(ls /usr/lib/xorg/modules/drivers 2>/dev/null | tr '\n' ' ')"
 
-rm -f /tmp/.X11-unix/X0
+# The config the image carries, and two variations made from it here: one that
+# keeps the cursor in software (the hardware cursor is initialised right where
+# the crash is), and one that goes back to glamor.
+CONF=/etc/X11/xorg.conf.d/20-skyward.conf
+{
+    cat "$CONF"
+    printf '\nSection "ServerFlags"\n    Option "SWcursor" "true"\nEndSection\n'
+} > /tmp/swcursor.conf
+sed 's/"none"/"glamor"/; s/"ShadowFB" "true"/"ShadowFB" "false"/' "$CONF" > /tmp/glamor.conf
+
 mkdir -p /tmp/.X11-unix
-"$XORG" :0 -sharevts -novtswitch -noreset -nolisten tcp \
-    -logfile "$LOG/xorg.log" &
-XPID=$!
-i=0
-while [ "$i" -lt 80 ]; do
-    [ -S /tmp/.X11-unix/X0 ] && break
-    kill -0 "$XPID" 2>/dev/null || break
-    sleep 0.25
-    i=$((i + 1))
+
+# Starts the server once and waits for its socket. Returns 0 when it is up.
+try_x() {
+    name=$1
+    shift
+    rm -f /tmp/.X11-unix/X0
+    "$XORG" :0 -sharevts -novtswitch -noreset -nolisten tcp \
+        -logfile "$LOG/xorg-$name.log" "$@" >>"$LOG/x-$name.out" 2>&1 &
+    XPID=$!
+    i=0
+    while [ "$i" -lt 80 ]; do
+        [ -S /tmp/.X11-unix/X0 ] && return 0
+        kill -0 "$XPID" 2>/dev/null || break
+        sleep 0.25
+        i=$((i + 1))
+    done
+    kill -9 "$XPID" 2>/dev/null
+    wait "$XPID" 2>/dev/null
+    echo "--- $name did not come up; last of its log:"
+    tail -n 14 "$LOG/xorg-$name.log" 2>&1
+    return 1
+}
+
+XUP=""
+for attempt in plain swcursor nocursor glamor; do
+    [ -n "$XUP" ] && break
+    echo "--- X server, attempt: $attempt"
+    case "$attempt" in
+        plain)    try_x plain -config "$CONF" && XUP=plain ;;
+        swcursor) try_x swcursor -config /tmp/swcursor.conf && XUP=swcursor ;;
+        nocursor) try_x nocursor -config "$CONF" -nocursor && XUP=nocursor ;;
+        glamor)   try_x glamor -config /tmp/glamor.conf && XUP=glamor ;;
+    esac
 done
-if [ ! -S /tmp/.X11-unix/X0 ]; then
-    echo "the X server did not come up; last of $LOG/xorg.log:"
-    tail -n 60 "$LOG/xorg.log" 2>&1
-    kill "$XPID" 2>/dev/null
+
+if [ -z "$XUP" ]; then
+    echo "--- no X server came up; asking a debugger where it died"
+    if [ -x /usr/bin/gdb ]; then
+        timeout 90 /usr/bin/gdb -batch \
+            -ex "set confirm off" -ex "set pagination off" -ex run \
+            -ex "bt" -ex "thread apply all bt" -ex "info registers" \
+            --args "$XORG" :0 -sharevts -novtswitch -noreset -nolisten tcp \
+            -config "$CONF" -logfile /tmp/gdb-xorg.log 2>&1 | tail -n 80
+    else
+        echo "no debugger in this payload"
+    fi
+    # The browser still gets a chance: headless needs no display server, and a
+    # screenshot proves the engine and the network work even when the panel
+    # path does not.
+    echo "--- chromium, headless, one screenshot"
+    timeout 120 /usr/lib/chromium/chromium --headless=new --no-sandbox \
+        --disable-gpu --user-data-dir="$HOME/profile" \
+        --screenshot=/data/skyward/browser/logs/headless.png \
+        --window-size=1440,3200 "$URL" 2>&1 | tail -n 20
     exit 1
 fi
-echo "x is up"
+echo "--- x is up (attempt: $XUP)"
 
 export DISPLAY=:0
 
-# How big the panel is, so the keyboard can be told where to sit and the window
-# can be given a size. Without a window manager nothing places windows, so every
-# size here is asked for.
 WIDTH=1440
 HEIGHT=3200
 if command -v xdpyinfo > /dev/null 2>&1; then
@@ -125,9 +154,6 @@ if command -v xdpyinfo > /dev/null 2>&1; then
 fi
 echo "panel is ${WIDTH}x${HEIGHT}"
 
-# A keyboard that can be touched: a captive portal cannot be answered, and a
-# search cannot be typed, without one. It starts after the browser so that it
-# is mapped on top of it.
 if [ -x /usr/bin/xvkbd ]; then
     (
         sleep 6
@@ -136,14 +162,6 @@ if [ -x /usr/bin/xvkbd ]; then
     ) &
 fi
 
-# --no-sandbox because the payload runs as root inside a chroot that has
-# nothing else in it; there is no other user to drop to, and the alternative
-# is a browser that cannot start.
-#
-# There is no window manager, so nothing else will give the window a size: the
-# geometry is asked for here. The first attempt keeps the GPU; a browser that
-# dies on the GPU path is worth one more try without it, because a page that
-# scrolls slowly is worth more than a black panel.
 browser() {
     /usr/lib/chromium/chromium \
         --ozone-platform=x11 \
