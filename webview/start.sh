@@ -37,6 +37,11 @@ mountpoint -q /run 2>/dev/null || mount -t tmpfs -o mode=0755 tmpfs /run \
 mkdir -p /dev/shm
 mountpoint -q /dev/shm 2>/dev/null || mount -t tmpfs -o mode=1777 tmpfs /dev/shm \
     || echo "no tmpfs on /dev/shm"
+# The image is mounted read-only and Xorg wants somewhere to put compiled
+# keymaps; a tmpfs there keeps it from complaining about a read-only /var.
+mkdir -p /var/lib/xkb 2>/dev/null
+mountpoint -q /var/lib/xkb 2>/dev/null || mount -t tmpfs -o mode=0755 tmpfs /var/lib/xkb \
+    || echo "no tmpfs on /var/lib/xkb"
 
 # udev, so libinput finds the touchscreen. `systemd-udevd` is not on PATH in
 # this suite: the file is a link to udevadm, a multicall binary, and it has to
@@ -104,13 +109,45 @@ fi
 # --no-sandbox because the payload runs as root inside a chroot that has
 # nothing else in it; there is no other user to drop to, and the alternative
 # is a browser that cannot start.
-exec /usr/lib/chromium/chromium \
-    --ozone-platform=x11 \
-    --kiosk \
-    --start-fullscreen \
-    --no-sandbox \
-    --no-first-run \
-    --no-default-browser-check \
-    --disable-dev-shm-usage \
-    --user-data-dir="$HOME/profile" \
-    "$URL"
+#
+# There is no window manager, so nothing else will give the window a size: the
+# geometry is asked for here. The first attempt keeps the GPU; a browser that
+# dies on the GPU path is worth one more try without it, because a page that
+# scrolls slowly is worth more than a black panel.
+browser() {
+    /usr/lib/chromium/chromium \
+        --ozone-platform=x11 \
+        --kiosk \
+        --start-fullscreen \
+        --window-position=0,0 \
+        --window-size="$WIDTH,$HEIGHT" \
+        --no-sandbox \
+        --no-first-run \
+        --no-default-browser-check \
+        --disable-dev-shm-usage \
+        --user-data-dir="$HOME/profile" \
+        "$@" \
+        "$URL"
+}
+
+browser
+RC=$?
+echo "chromium exited $RC"
+if [ "$RC" -ne 0 ]; then
+    echo "trying again without the gpu"
+    exec /usr/lib/chromium/chromium \
+        --ozone-platform=x11 \
+        --kiosk \
+        --start-fullscreen \
+        --window-position=0,0 \
+        --window-size="$WIDTH,$HEIGHT" \
+        --disable-gpu \
+        --disable-gpu-compositing \
+        --no-sandbox \
+        --no-first-run \
+        --no-default-browser-check \
+        --disable-dev-shm-usage \
+        --user-data-dir="$HOME/profile" \
+        "$URL"
+fi
+exit "$RC"
