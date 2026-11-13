@@ -5,21 +5,24 @@
 # Run on an arm64 machine (the CI runner is ubuntu-24.04-arm): debootstrap for
 # a foreign architecture needs qemu, which is one more thing to go wrong.
 #
-# The display is an X server, not a Wayland compositor, and that is forced by
-# the kernel: it is built with CONFIG_VT unset, so libseat can never mark a
-# session active and every compositor that goes through it dies before it makes
-# a socket. Xorg's modesetting driver opens /dev/dri itself and needs no seat.
+# The display is Xvfb, and this is the third answer to the same question.
 #
-# It has to be told what to ignore. The card this phone exposes advertises three
-# outputs besides the panel -- two "Virtual" connectors the vendor driver keeps
-# for screen recording, and a DisplayPort that is not plugged into anything --
-# and the modesetting driver puts all of them into one screen at their bounding
-# box. That is a 1920x3200 framebuffer for a 1440x3200 panel, and three CRTCs
-# sharing one card, and with it Xorg segfaults during screen initialisation
-# before it makes a socket. The config below turns the three of them off and
-# leaves the panel; glamor is off as well, because it refuses to run on llvmpipe
-# anyway ("Refusing to try glamor on llvmpipe") and the software path it falls
-# back to is the one that works.
+# A Wayland compositor cannot work: the kernel is built with CONFIG_VT unset, so
+# libseat can never mark a session active.
+#
+# Xorg with the modesetting driver cannot work either, and that was measured
+# rather than guessed: it opens the card, reaches screen initialisation, and
+# segfaults inside modesetting_drv.so while describing the card's outputs to
+# RandR (gdb: AddScreen -> xf86CrtcScreenInit -> xf86RandR12Init ->
+# RRChangeOutputProperty -> crash). One output, four outputs, glamor, shadow,
+# software cursor, no cursor, ZaphodHeads -- the same place every time.
+#
+# So the payload stops asking the card for anything. Xvfb draws into a plain
+# memory framebuffer it owns, and `-fbdir` writes that framebuffer to a file the
+# recovery can mmap: the recovery puts those pixels on the panel itself, since
+# it already has the card, a drawing surface and the touch screen. A finger
+# reaches the page the other way round, as one line per touch into a FIFO that
+# this payload turns into an xdotool command.
 #
 # The image is erofs, not squashfs, and that is not a preference: the recovery
 # mounts the phone's own system partitions with erofs, so the kernel in the
@@ -45,18 +48,19 @@ sudo chroot "$ROOT" apt-get install --yes --no-install-recommends \
     chromium libinput10 udev libgl1-mesa-dri libegl-mesa0 libgbm1 \
     fonts-noto-cjk fonts-noto-color-emoji ca-certificates xdg-utils
 
-# The panel has no virtual terminal to hand to a compositor (`CONFIG_VT is not
-# set`), so the display comes from an X server, whose modesetting driver opens
-# the card itself. The keyboard is an X client too: nothing else can type.
+# Xvfb is the display: it never touches the card, so it cannot hit the crash the
+# modesetting driver hits. xdotool is how a finger gets from the recovery's touch
+# screen into the page, and x11-utils is for the one question worth asking of a
+# display server (how big is it). xkb-data is the keymap the browser reads.
 sudo chroot "$ROOT" apt-get install --yes --no-install-recommends \
-    xserver-xorg-core xserver-xorg-input-libinput xkb-data x11-utils \
-    || echo "the X server did not install; the browser will have no display"
+    xvfb x11-utils xdotool xkb-data \
+    || echo "the display did not install; the browser will have nowhere to draw"
 sudo chroot "$ROOT" apt-get install --yes --no-install-recommends xvkbd \
     || echo "no on-screen keyboard; the page can be looked at but not typed into"
 
-# A debugger, because the X server dies inside its own screen initialisation
-# and the address it reports is not a place: a stack trace is. The image pays
-# about thirty megabytes for being able to answer "where" instead of guessing.
+# A debugger, because a display server that dies during screen initialisation
+# reports an address and not a place, and a stack trace is what turns the next
+# attempt into an answer instead of a guess. About thirty megabytes.
 sudo chroot "$ROOT" apt-get install --yes --no-install-recommends gdb \
     || echo "no debugger in the image; a crash will only be an address"
 
@@ -79,56 +83,9 @@ sudo tee "$ROOT/etc/chromium/policies/managed/skyward.json" > /dev/null <<'POLIC
 }
 POLICY
 
-# What Xorg is told about this phone's card: one screen, the panel only.
-sudo mkdir -p "$ROOT/etc/X11/xorg.conf.d"
-sudo tee "$ROOT/etc/X11/xorg.conf.d/20-skyward.conf" > /dev/null <<'XCONF'
-# Three outputs this phone's card advertises but this display does not use.
-# "Ignore" is what keeps them out of the screen: without it the modesetting
-# driver builds one screen at the bounding box of all four and dies.
-Section "Monitor"
-    Identifier "ignored-virtual-1"
-    Option "Ignore" "true"
-EndSection
+# Xvfb needs no configuration file: it has no card to be told about, and the
+# screen size is passed on its command line.
 
-Section "Monitor"
-    Identifier "ignored-virtual-2"
-    Option "Ignore" "true"
-EndSection
-
-Section "Monitor"
-    Identifier "ignored-dp"
-    Option "Ignore" "true"
-EndSection
-
-Section "Monitor"
-    Identifier "panel"
-EndSection
-
-Section "Device"
-    Identifier "gpu"
-    Driver "modesetting"
-    # glamor refuses to initialise on llvmpipe and then falls back anyway; the
-    # fallback is the path that works, so it is asked for directly.
-    Option "AccelMethod" "none"
-    Option "ShadowFB" "true"
-    Option "EnablePageFlip" "false"
-    Option "Monitor-Virtual-1" "ignored-virtual-1"
-    Option "Monitor-Virtual-2" "ignored-virtual-2"
-    Option "Monitor-DP-1" "ignored-dp"
-    Option "Monitor-DSI-1" "panel"
-EndSection
-
-Section "Screen"
-    Identifier "screen"
-    Device "gpu"
-    DefaultDepth 24
-EndSection
-
-Section "ServerLayout"
-    Identifier "layout"
-    Screen "screen"
-EndSection
-XCONF
 
 # The launcher, and the mountpoints the recovery binds into.
 sudo mkdir -p "$ROOT/opt/skyward"

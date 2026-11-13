@@ -5,25 +5,32 @@
 # is mounted at /, /dev /proc /sys /data are bound in, /etc/resolv.conf holds
 # the DHCP answer, and the DRM card has been released.
 #
-# This kernel is built without virtual terminals -- `# CONFIG_VT is not set` --
-# and that closes one door for good: libseat marks a session active by opening
-# tty0, so no compositor that goes through it can ever open the card. An X
-# server needs no seat: its modesetting driver opens /dev/dri itself and
-# -sharevts keeps it out of VT handling.
+# Two display servers have now been measured on this phone and neither works:
 #
-# It does not come up on the first try, and the log it leaves says why: it
-# reaches "Silken mouse enabled" during screen initialisation and segfaults at
-# address 0. So the X server is not started once and hoped for -- several
-# variations are tried in turn, each with a log of its own, and whichever makes
-# its socket is the one the browser gets. Everything is narrated into
-# /data/skyward/browser/logs/start.log, which the recovery copies to internal
-# storage when the payload ends.
+#   weston / cage / wlroots -- need a seat, and this kernel has no VT
+#                              (`# CONFIG_VT is not set`), so libseat can never
+#                              mark a session active;
+#   Xorg with modesetting   -- opens the card itself, then segfaults inside
+#                              modesetting_drv.so while describing the card's
+#                              outputs to RandR (gdb: AddScreen ->
+#                              xf86CrtcScreenInit -> xf86RandR12Init ->
+#                              RRChangeOutputProperty -> crash), with one output,
+#                              four outputs, glamor, shadow, no cursor -- the
+#                              same place every time.
+#
+# So the payload no longer asks the card for anything. Xvfb draws into a plain
+# memory framebuffer of its own (`-fbdir` writes it to a file that its owner can
+# mmap), Chromium draws into Xvfb, and the recovery puts those pixels on the
+# panel itself -- it already has the card, a drawing surface and the touch
+# screen. Input comes back the other way: the recovery writes one line per touch
+# into a FIFO and the loop below turns it into an xdotool command.
 set -u
 
 LOG=/data/skyward/browser/logs
-mkdir -p "$LOG" 2>/dev/null
+FB=/data/skyward/browser/fb
+mkdir -p "$LOG" "$FB" 2>/dev/null
 exec >>"$LOG/start.log" 2>&1
-rm -f "$LOG"/xorg-*.log "$LOG"/x-*.out
+rm -f "$LOG"/xorg-*.log "$LOG"/x-*.out "$LOG"/xvfb.out
 echo "--- start: $(date)"
 echo "kernel: $(uname -r 2>/dev/null)"
 
@@ -41,15 +48,9 @@ mountpoint -q /run 2>/dev/null || mount -t tmpfs -o mode=0755 tmpfs /run \
 mkdir -p /dev/shm
 mountpoint -q /dev/shm 2>/dev/null || mount -t tmpfs -o mode=1777 tmpfs /dev/shm \
     || echo "no tmpfs on /dev/shm"
-mkdir -p /var/lib/xkb 2>/dev/null
-mountpoint -q /var/lib/xkb 2>/dev/null || mount -t tmpfs -o mode=0755 tmpfs /var/lib/xkb \
-    || echo "no tmpfs on /var/lib/xkb"
 
 echo "--- the card, as the kernel sees it"
 ls -l /dev/dri 2>&1
-for conn in /sys/class/drm/card0-*/status; do
-    [ -r "$conn" ] && echo "$conn: $(cat "$conn")"
-done
 
 if [ -x /usr/lib/systemd/systemd-udevd ] && ! pgrep -x systemd-udevd > /dev/null 2>&1; then
     /usr/lib/systemd/systemd-udevd --daemon || echo "udevd did not start"
@@ -59,101 +60,39 @@ for u in /sys/class/input/event*/uevent; do
 done
 
 URL="${SKYWARD_START_URL:-https://cn.bing.com}"
+TOUCH=/data/skyward/browser/touch.fifo
 
-XORG=""
-for candidate in /usr/lib/xorg/Xorg /usr/bin/Xorg /usr/lib/xorg/Xorg.wrap; do
-    if [ -x "$candidate" ]; then XORG="$candidate"; break; fi
-done
-if [ -z "$XORG" ] && command -v Xorg > /dev/null 2>&1; then XORG=$(command -v Xorg); fi
-if [ -z "$XORG" ]; then
-    echo "no X server in this payload; /usr/lib/xorg holds:"
-    ls -l /usr/lib/xorg 2>&1
+if [ ! -x /usr/bin/Xvfb ]; then
+    echo "no Xvfb in this payload"
     exit 1
 fi
-echo "x server: $XORG"
-"$XORG" -version 2>&1 || true
 
-# The config the image carries, plus variations made from it here.
-#
-# The debugger says where the server dies: inside the modesetting driver, called
-# from RRChangeOutputProperty by xf86RandR12Init, i.e. while the driver is
-# describing its outputs to RandR. This card advertises four outputs -- the
-# panel, DP-1, and two "Virtual" connectors -- and the three that are not the
-# panel are what the driver is describing when it walks off the end. "Ignore"
-# keeps an output out of the screen but does not keep it out of RandR, so what
-# is tried first is ZaphodHeads, which limits the outputs the driver probes at
-# all: with one output there is nothing left to describe.
-CONF=/etc/X11/xorg.conf.d/20-skyward.conf
-
-zaphod() {
-    sed "s/Driver \"modesetting\"/Driver \"modesetting\"\n    Option \"ZaphodHeads\" \"$1\"/" "$CONF" > "$2"
-}
-
-zaphod DSI-1 /tmp/dsi.conf
-zaphod Virtual-1 /tmp/virtual.conf
-sed 's/"none"/"glamor"/; s/"ShadowFB" "true"/"ShadowFB" "false"/' /tmp/dsi.conf > /tmp/dsi-glamor.conf
-
+rm -f "$FB"/Xvfb_screen0 /tmp/.X11-unix/X0
 mkdir -p /tmp/.X11-unix
-
-# Starts the server once and waits for its socket. Returns 0 when it is up.
-try_x() {
-    name=$1
-    shift
-    rm -f /tmp/.X11-unix/X0
-    "$XORG" :0 -sharevts -novtswitch -noreset -nolisten tcp \
-        -logfile "$LOG/xorg-$name.log" "$@" >>"$LOG/x-$name.out" 2>&1 &
-    XPID=$!
-    i=0
-    while [ "$i" -lt 80 ]; do
-        [ -S /tmp/.X11-unix/X0 ] && return 0
-        kill -0 "$XPID" 2>/dev/null || break
-        sleep 0.25
-        i=$((i + 1))
-    done
-    kill -9 "$XPID" 2>/dev/null
-    wait "$XPID" 2>/dev/null
-    echo "--- $name did not come up; last of its log:"
-    tail -n 14 "$LOG/xorg-$name.log" 2>&1
-    return 1
-}
-
-XUP=""
-for attempt in dsi dsi-glamor dsi-nocursor virtual plain; do
-    [ -n "$XUP" ] && break
-    echo "--- X server, attempt: $attempt"
-    case "$attempt" in
-        dsi)          try_x dsi -config /tmp/dsi.conf && XUP=dsi ;;
-        dsi-glamor)   try_x dsi-glamor -config /tmp/dsi-glamor.conf && XUP=dsi-glamor ;;
-        dsi-nocursor) try_x dsi-nocursor -config /tmp/dsi.conf -nocursor && XUP=dsi-nocursor ;;
-        virtual)      try_x virtual -config /tmp/virtual.conf && XUP=virtual ;;
-        plain)        try_x plain -config "$CONF" && XUP=plain ;;
-    esac
+echo "--- starting Xvfb into $FB"
+/usr/bin/Xvfb :0 -screen 0 1440x3200x24 -fbdir "$FB" -nolisten tcp \
+    -nolisten local >"$LOG/xvfb.out" 2>&1 &
+XPID=$!
+i=0
+while [ "$i" -lt 80 ]; do
+    [ -S /tmp/.X11-unix/X0 ] && break
+    kill -0 "$XPID" 2>/dev/null || break
+    sleep 0.25
+    i=$((i + 1))
 done
-
-if [ -z "$XUP" ]; then
-    echo "--- no X server came up; asking a debugger where it died"
-    if [ -x /usr/bin/gdb ]; then
-        timeout 90 /usr/bin/gdb -batch \
-            -ex "set confirm off" -ex "set pagination off" -ex run \
-            -ex "bt" -ex "thread apply all bt" -ex "info registers" \
-            --args "$XORG" :0 -sharevts -novtswitch -noreset -nolisten tcp \
-            -config "$CONF" -logfile /tmp/gdb-xorg.log 2>&1 | tail -n 80
-    else
-        echo "no debugger in this payload"
-    fi
-    # The browser still gets a chance: headless needs no display server, and a
-    # screenshot proves the engine and the network work even when the panel
-    # path does not.
-    echo "--- chromium, headless, one screenshot"
-    timeout 120 /usr/lib/chromium/chromium --headless=new --no-sandbox \
-        --disable-gpu --user-data-dir="$HOME/profile" \
-        --screenshot=/data/skyward/browser/logs/headless.png \
-        --window-size=1440,3200 "$URL" 2>&1 | tail -n 20
+if [ ! -S /tmp/.X11-unix/X0 ]; then
+    echo "Xvfb did not come up; its own words:"
+    cat "$LOG/xvfb.out" 2>&1
     exit 1
 fi
-echo "--- x is up (attempt: $XUP)"
+echo "--- Xvfb is up"
+ls -l "$FB" 2>&1
 
 export DISPLAY=:0
+
+fingerprint() {
+    head -c 300000 "$FB/Xvfb_screen0" 2>/dev/null | md5sum | cut -d' ' -f1
+}
 
 WIDTH=1440
 HEIGHT=3200
@@ -164,6 +103,7 @@ if command -v xdpyinfo > /dev/null 2>&1; then
     esac
 fi
 echo "panel is ${WIDTH}x${HEIGHT}"
+echo "framebuffer before the browser draws: $(fingerprint)"
 
 if [ -x /usr/bin/xvkbd ]; then
     (
@@ -173,36 +113,58 @@ if [ -x /usr/bin/xvkbd ]; then
     ) &
 fi
 
-browser() {
-    /usr/lib/chromium/chromium \
-        --ozone-platform=x11 \
-        --kiosk \
-        --start-fullscreen \
-        --window-position=0,0 \
-        --window-size="$WIDTH,$HEIGHT" \
-        --no-sandbox \
-        --no-first-run \
-        --no-default-browser-check \
-        --disable-dev-shm-usage \
-        --user-data-dir="$HOME/profile" \
-        "$@" \
-        "$URL"
-}
-
 if [ ! -x /usr/lib/chromium/chromium ]; then
-    echo "no browser binary at /usr/lib/chromium/chromium; /usr/lib/chromium holds:"
+    echo "no browser binary at /usr/lib/chromium/chromium"
     ls /usr/lib/chromium 2>&1
     exit 1
 fi
 
 echo "--- chromium, first attempt"
-browser
+/usr/lib/chromium/chromium \
+    --ozone-platform=x11 \
+    --kiosk \
+    --start-fullscreen \
+    --window-position=0,0 \
+    --window-size="$WIDTH,$HEIGHT" \
+    --no-sandbox \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-dev-shm-usage \
+    --user-data-dir="$HOME/profile" \
+    "$URL" >"$LOG/chromium.out" 2>&1 &
+CPID=$!
+
+sleep 20
+echo "framebuffer after twenty seconds: $(fingerprint)"
+if command -v xdotool > /dev/null 2>&1; then
+    echo "xdotool sees: $(xdotool search --name . 2>&1 | tr '\n' ' ')"
+    echo "display size: $(xdotool getdisplaygeometry 2>&1)"
+else
+    echo "no xdotool in this payload"
+fi
+if [ -p "$TOUCH" ]; then
+    echo "touch fifo is there"
+else
+    mkfifo "$TOUCH" 2>/dev/null && echo "touch fifo made" || echo "no touch fifo"
+fi
+
+# One line per touch from the recovery: "x y down" or "x y up". The recovery
+# owns the touch screen, so this is how a finger reaches the page.
+if [ -p "$TOUCH" ] && command -v xdotool > /dev/null 2>&1; then
+    (
+        while read -r x y what; do
+            [ -z "${x:-}" ] && continue
+            case "${what:-}" in
+                down) xdotool mousemove "$x" "$y" mousedown 1 ;;
+                up)   xdotool mouseup 1 ;;
+                key)  xdotool key "$y" ;;
+            esac
+        done < "$TOUCH"
+    ) &
+fi
+
+wait "$CPID"
 RC=$?
 echo "chromium exited $RC"
-if [ "$RC" -ne 0 ]; then
-    echo "--- chromium, second attempt without the gpu"
-    browser --disable-gpu --disable-gpu-compositing
-    RC=$?
-    echo "chromium exited $RC on the second attempt"
-fi
+tail -n 30 "$LOG/chromium.out" 2>&1
 exit "$RC"
