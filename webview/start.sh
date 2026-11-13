@@ -73,15 +73,25 @@ fi
 echo "x server: $XORG"
 "$XORG" -version 2>&1 || true
 
-# The config the image carries, and two variations made from it here: one that
-# keeps the cursor in software (the hardware cursor is initialised right where
-# the crash is), and one that goes back to glamor.
+# The config the image carries, plus variations made from it here.
+#
+# The debugger says where the server dies: inside the modesetting driver, called
+# from RRChangeOutputProperty by xf86RandR12Init, i.e. while the driver is
+# describing its outputs to RandR. This card advertises four outputs -- the
+# panel, DP-1, and two "Virtual" connectors -- and the three that are not the
+# panel are what the driver is describing when it walks off the end. "Ignore"
+# keeps an output out of the screen but does not keep it out of RandR, so what
+# is tried first is ZaphodHeads, which limits the outputs the driver probes at
+# all: with one output there is nothing left to describe.
 CONF=/etc/X11/xorg.conf.d/20-skyward.conf
-{
-    cat "$CONF"
-    printf '\nSection "ServerFlags"\n    Option "SWcursor" "true"\nEndSection\n'
-} > /tmp/swcursor.conf
-sed 's/"none"/"glamor"/; s/"ShadowFB" "true"/"ShadowFB" "false"/' "$CONF" > /tmp/glamor.conf
+
+zaphod() {
+    sed "s/Driver \"modesetting\"/Driver \"modesetting\"\n    Option \"ZaphodHeads\" \"$1\"/" "$CONF" > "$2"
+}
+
+zaphod DSI-1 /tmp/dsi.conf
+zaphod Virtual-1 /tmp/virtual.conf
+sed 's/"none"/"glamor"/; s/"ShadowFB" "true"/"ShadowFB" "false"/' /tmp/dsi.conf > /tmp/dsi-glamor.conf
 
 mkdir -p /tmp/.X11-unix
 
@@ -108,14 +118,15 @@ try_x() {
 }
 
 XUP=""
-for attempt in plain swcursor nocursor glamor; do
+for attempt in dsi dsi-glamor dsi-nocursor virtual plain; do
     [ -n "$XUP" ] && break
     echo "--- X server, attempt: $attempt"
     case "$attempt" in
-        plain)    try_x plain -config "$CONF" && XUP=plain ;;
-        swcursor) try_x swcursor -config /tmp/swcursor.conf && XUP=swcursor ;;
-        nocursor) try_x nocursor -config "$CONF" -nocursor && XUP=nocursor ;;
-        glamor)   try_x glamor -config /tmp/glamor.conf && XUP=glamor ;;
+        dsi)          try_x dsi -config /tmp/dsi.conf && XUP=dsi ;;
+        dsi-glamor)   try_x dsi-glamor -config /tmp/dsi-glamor.conf && XUP=dsi-glamor ;;
+        dsi-nocursor) try_x dsi-nocursor -config /tmp/dsi.conf -nocursor && XUP=dsi-nocursor ;;
+        virtual)      try_x virtual -config /tmp/virtual.conf && XUP=virtual ;;
+        plain)        try_x plain -config "$CONF" && XUP=plain ;;
     esac
 done
 
