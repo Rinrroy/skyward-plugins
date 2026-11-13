@@ -1,9 +1,14 @@
 #!/bin/bash
-# Build the browser payload: a Debian arm64 rootfs holding Chromium, Weston,
-# Mesa and udev, packed into one image the recovery can mount.
+# Build the browser payload: a Debian arm64 rootfs holding Chromium, an X
+# server, Mesa and udev, packed into one image the recovery can mount.
 #
 # Run on an arm64 machine (the CI runner is ubuntu-24.04-arm): debootstrap for
 # a foreign architecture needs qemu, which is one more thing to go wrong.
+#
+# The display is an X server, not a Wayland compositor, and that is forced by
+# the kernel: it is built with CONFIG_VT unset, so libseat can never mark a
+# session active and every compositor that goes through it dies before it makes
+# a socket. Xorg's modesetting driver opens /dev/dri itself and needs no seat.
 #
 # The image is erofs, not squashfs, and that is not a preference: the recovery
 # mounts the phone's own system partitions with erofs, so the kernel in the
@@ -26,8 +31,17 @@ sudo debootstrap --arch=arm64 --variant=minbase --include=ca-certificates \
 
 sudo chroot "$ROOT" apt-get update
 sudo chroot "$ROOT" apt-get install --yes --no-install-recommends \
-    chromium weston libinput10 udev libgl1-mesa-dri libegl-mesa0 libgbm1 \
+    chromium libinput10 udev libgl1-mesa-dri libegl-mesa0 libgbm1 \
     fonts-noto-cjk fonts-noto-color-emoji ca-certificates xdg-utils
+
+# The panel has no virtual terminal to hand to a compositor (`CONFIG_VT is not
+# set`), so the display comes from an X server, whose modesetting driver opens
+# the card itself. The keyboard is an X client too: nothing else can type.
+sudo chroot "$ROOT" apt-get install --yes --no-install-recommends \
+    xserver-xorg-core xserver-xorg-input-libinput xkb-data x11-utils \
+    || echo "the X server did not install; the browser will have no display"
+sudo chroot "$ROOT" apt-get install --yes --no-install-recommends xvkbd \
+    || echo "no on-screen keyboard; the page can be looked at but not typed into"
 
 # The default search engine, the home page, and nothing that phones home.
 sudo mkdir -p "$ROOT/etc/chromium/policies/managed"
