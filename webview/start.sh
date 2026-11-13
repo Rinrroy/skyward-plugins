@@ -27,7 +27,10 @@
 set -u
 
 LOG=/data/skyward/browser/logs
-FB=/data/skyward/browser/fb
+# The recovery binds a folder of its own memory here, so the framebuffer this
+# display server rewrites many times a second never reaches the phone's storage
+# and costs it no writeback at all.
+FB=/run/skyward/fb
 mkdir -p "$LOG" "$FB" 2>/dev/null
 exec >>"$LOG/start.log" 2>&1
 rm -f "$LOG"/xorg-*.log "$LOG"/x-*.out "$LOG"/xvfb.out
