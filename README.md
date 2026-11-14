@@ -2,6 +2,12 @@
 
 The plugins Skyward downloads. Today there is one: a browser.
 
+This repository also builds the file the browser's **full mode** installs:
+a Debian arm64 root with Chromium in it, packed as
+`chromium-<version>-arm64.tar.gz`. It is not a plugin — the recovery itself
+starts it in a chroot — but it is too big to build anywhere but a computer,
+so it ships here. See [`chromium/`](chromium/README.md).
+
 A plugin is a folder with a `plugin.json` in it. What makes this repository
 different from a folder someone drops on their phone is the **payload**: an
 image holding a program, too big to live in a recovery ramdisk and too big to
