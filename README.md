@@ -25,13 +25,13 @@ That file names every plugin, what it is, and where its image is:
     {
       "name": "webview",
       "title": "浏览器",
-      "version": "2.0",
+      "version": "3.0",
       "author": "Rinrroy",
-      "about": "在恢复里浏览网页、播放视频。默认用必应搜索。",
+      "about": "在恢复里浏览网页，默认用必应搜索。不运行脚本，也不播放视频。",
       "needs": ["data", "network"],
       "protocol": 1,
       "payload": {
-        "url": "https://github.com/Rinrroy/skyward-plugins/releases/download/webview-2.0/webview-2.0-arm64.erofs",
+        "url": "https://github.com/Rinrroy/skyward-plugins/releases/download/webview-3.0/webview-3.0-arm64.erofs",
         "sha256": "…64 hex…",
         "size": 12345678,
         "format": "erofs",
@@ -89,9 +89,10 @@ partitions with erofs, so the kernel in the ramdisk is certain to read it.
 This replaces the earlier design, which shipped a whole Debian arm64 rootfs with
 Chromium under Weston on a chrooted DRM card. That approach needed Xvfb, a
 framebuffer copy and a 400 MB image to show a window, most of it a userspace the
-recovery does not need. Full Chromium mode still exists — the plugin starts it,
-chroots into a Chromium rootfs it finds under the plugin store itself, and the
-recovery never learns that it happened.
+recovery does not need. This version is the basic browser only; full Chromium
+mode stays the plugin's own business if it comes back — the plugin would start
+it, chroot into a Chromium rootfs it finds under the plugin store, and the
+recovery would never learn that it happened.
 
 ### Building it
 
@@ -99,26 +100,33 @@ recovery never learns that it happened.
 fetches the pinned upstream tree, drops `webview/crate/` into it as
 `crates/skyward-browser`, cross-compiles with `cargo ndk`, strips the binary,
 packs the image with `mkfs.erofs`, and writes the real digest and size back into
-`webview/plugin.json`:
+`webview/plugin.json`.
 
-```
-gh workflow run webview.yml -f version=2.0 -f publish=true
-```
-
-With `publish`, the image and `plugin.json` are attached to a release tagged
-`webview-<version>`, and `plugins.json` to the `latest` release that the URL
-above points at. Without it, a build is just a build: the artifacts are left on
-the run, nothing is published.
+Publishing follows the version, not a button: a push to `main` builds, and when
+`webview/plugin.json` names a version that has no Release yet, it publishes it —
+the image and `plugin.json` to a release tagged `webview-<version>`, and
+`plugins.json` to the `latest` release the URL above points at. Bumping the
+version is the release. Re-running a version that is already out only rebuilds,
+which is what reviewing a build wants; `gh workflow run webview.yml -f
+publish=true` forces a publish of the current version.
 
 The runner is x86_64, deliberately: the payload is cross-compiled, so nothing
 needs an arm64 machine, and the NDK's Linux package is x86_64-only.
 
 ### What is known not to work yet
 
+This version is the basic browser: text, pictures, links, basic CSS, forms,
+cookies, downloads, tabs and the on-screen keyboard. It does not run scripts,
+and it does not play video.
+
+The full Chromium mode the interface still offers a page for is not in this
+build. That page says so and comes back; a later version of the plugin can wire
+it up without the recovery changing, since starting Chromium is the plugin's
+own business. When it does, the limits below apply to it:
+
 - **Audio.** The codec needs the vendor's audio HAL, which a plugin does not
   have. Video plays silently.
 - **Hardware video decoding.** Qualcomm's Venus decoder is stateless V4L2 and
   needs an Android component in front of it; decoding happens in software.
-- **GPU in full mode.** If freedreno cannot drive the Adreno from inside the
-  Chromium rootfs, Chromium falls back to SwiftShader and the frame rate shows
-  it.
+- **GPU.** If freedreno cannot drive the Adreno from inside the Chromium
+  rootfs, Chromium falls back to SwiftShader and the frame rate shows it.

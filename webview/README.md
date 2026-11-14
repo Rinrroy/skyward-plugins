@@ -16,13 +16,13 @@ The manifest is the thing to read first; the image is what it points at.
 ```json
 {
   "title": "浏览器",
-  "version": "2.0",
+  "version": "3.0",
   "author": "Rinrroy",
-  "about": "在恢复里浏览网页、播放视频。默认用必应搜索。",
+  "about": "在恢复里浏览网页，默认用必应搜索。不运行脚本，也不播放视频。",
   "needs": ["data", "network"],
   "protocol": 1,
   "payload": {
-    "url": "https://github.com/Rinrroy/skyward-plugins/releases/download/webview-2.0/webview-2.0-arm64.erofs",
+    "url": "https://github.com/Rinrroy/skyward-plugins/releases/download/webview-3.0/webview-3.0-arm64.erofs",
     "sha256": "…64 hex…",
     "size": 12345678,
     "format": "erofs",

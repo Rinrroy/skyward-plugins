@@ -318,6 +318,8 @@ fn dispatch(
                 "This build has no full mode (Chromium)",
             ]);
             println!("plugin: {notice} {effect:?}");
+            // 那个页面已经把自己设成「正在安装插件」了：替它收尾，否则它会一直转。
+            app.browser_plugin_installed(Err(notice.to_string()));
             app.report(notice, now);
         }
         // 别的都是 recovery 的页面要的，插件没有那些页面。
