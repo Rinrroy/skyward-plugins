@@ -35,7 +35,7 @@ jobs:
         run: |
           version="${{ inputs.version }}"
           [ -n "$version" ] || version=1.0
-          ./chromium/build.sh "$version"
+          bash ./chromium/build.sh "$version"
 
       - name: Keep what was built
         run: |
