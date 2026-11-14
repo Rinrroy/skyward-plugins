@@ -12,7 +12,7 @@ on:
     inputs:
       version:
         description: The version to publish
-        default: 1.0
+        default: 1.2
         required: true
   push:
     paths:
@@ -34,13 +34,13 @@ jobs:
       - name: Build the root
         run: |
           version="${{ inputs.version }}"
-          [ -n "$version" ] || version=1.0
+          [ -n "$version" ] || version=1.2
           bash ./chromium/build.sh "$version"
 
       - name: Keep what was built
         run: |
           version="${{ inputs.version }}"
-          [ -n "$version" ] || version=1.0
+          [ -n "$version" ] || version=1.2
           mkdir -p dist
           mv "chromium-$version-arm64.tar.gz" dist/
           mv "chromium-$version-arm64.tar.gz.sha256" dist/
@@ -57,7 +57,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${{ inputs.version }}"
-          [ -n "$version" ] || version=1.0
+          [ -n "$version" ] || version=1.2
           tag="chromium-$version"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "$tag is already published: the version has to change to publish again"

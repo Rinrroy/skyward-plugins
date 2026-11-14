@@ -95,9 +95,21 @@ echo "--- run.sh, and what a headless browser never reads"
 $SUDO cp "$HERE/run.sh" "$ROOT/run.sh"
 $SUDO chmod 755 "$ROOT/run.sh"
 
+# The locale file stays. Chromium loads it as a data pack and asks it for
+# every localized word the browser itself says; with locales/ empty it stops
+# on the first one it wants, as a trap with no message before it (the page
+# the recovery draws then only ever says the connection timed out). Only
+# en-US is kept: run.sh sets no LANG, so en-US is the locale Chromium
+# resolves, and the other languages cost download and nothing else.
 $SUDO rm -rf "$ROOT/usr/share/doc" "$ROOT/usr/share/man" "$ROOT/usr/share/info" \
-  "$ROOT/usr/share/lintian" "$ROOT/usr/lib/chromium/locales"/* \
+  "$ROOT/usr/share/lintian" \
   "$ROOT/var/lib/apt/lists"/* "$ROOT/var/cache/apt/archives"/*.deb
+$SUDO find "$ROOT/usr/lib/chromium/locales" -type f ! -name 'en-US.pak' -delete
+if [ ! -s "$ROOT/usr/lib/chromium/locales/en-US.pak" ]; then
+  echo "the locale file Chromium stops without is not in the root" >&2
+  exit 1
+fi
+echo "$VERSION" | $SUDO tee "$WORK/version.txt" >/dev/null
 $SUDO mkdir -p "$ROOT/tmp" "$ROOT/dev/shm" "$ROOT/root" "$ROOT/etc/ssl/certs"
 $SUDO chmod 1777 "$ROOT/tmp" "$ROOT/dev/shm"
 
