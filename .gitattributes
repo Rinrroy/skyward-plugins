@@ -1,0 +1,9 @@
+# Scripts are run by bash and by bionic's shell on the phone; a CRLF in one of
+# them is a `#!/usr/bin/env bash\r` that no kernel will execute. Git's Windows
+# default would add exactly that, so the endings are pinned here instead.
+*.sh            text eol=lf
+*.py            text eol=lf
+.github/**      text eol=lf
+
+# Everything else: normal text, diffable, and normalised to LF in the repository.
+*               text=auto

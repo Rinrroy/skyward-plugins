@@ -1,7 +1,19 @@
-# The payload's own files are the only thing this repository holds. Notes
-# written while working here are not part of it.
+# Working files, not part of the repository.
 *.txt
 *.log
-rootfs/
+
+# The checkout of Jamvii/skyward-for-aurora that webview/build.sh fetches, and
+# the payload tree it stages before packing. Both are rebuilt from the pin.
+.vendor/
+.build/
+
+# The images themselves. An image is a release asset, produced by a build and
+# checked against the digest in webview/plugin.json; a copy in git would be a
+# second, disagreeing copy.
+*.erofs
 webview-*-arm64.erofs
+
+# Written by tools/index.py from the manifests in this repository and uploaded
+# to the `latest` release by CI. Regenerating it is one command; committing it
+# would make it something that can drift.
 plugins.json

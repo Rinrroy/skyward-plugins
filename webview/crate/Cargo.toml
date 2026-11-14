@@ -1,0 +1,24 @@
+[package]
+name = "skyward-browser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Skyward 的网页浏览器，作为独立插件程序运行"
+
+[[bin]]
+name = "skyward-browser"
+path = "src/main.rs"
+
+# 依赖全部按 cfg(unix) 门控：android 上（cfg(unix) 为真）需要它们，而在
+# Windows/macOS 宿主上 `cargo test` 只编译纯逻辑模块（input/dirty/header），
+# 不需要 skyward-ui 等 Android 相关 crate，单测因此可以在开发机上跑。
+[target.'cfg(unix)'.dependencies]
+anyhow = { workspace = true }
+libc = { workspace = true }
+skyward-info = { path = "../skyward-info" }
+skyward-net = { path = "../skyward-net" }
+skyward-ui = { path = "../skyward-ui" }
+# 只为了 DeviceInfo 的 snapshot 字段（没有 Default，必须自己填）。
+skyward-vab = { path = "../skyward-vab" }
+# 与 skyward-net 用同一个 ureq 构建：解析器与连接类型必须是同一份。
+ureq = { version = "=3.5.0", default-features = false, features = ["rustls"] }

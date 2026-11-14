@@ -1,75 +1,218 @@
 name: webview
 
-# The browser payload. Not a release of Skyward: an image Skyward downloads
-# as a plugin, built where there is an arm64 machine to build it on.
+# The browser plugin: one program cross-compiled for Android's arm64 ABI, the
+# fonts it draws with and a launcher, packed into the erofs image Skyward
+# downloads. This is not a release of the recovery — it is a plugin, published
+# where the recovery looks for plugins:
+#
+#   https://github.com/Rinrroy/skyward-plugins/releases/latest/download/plugins.json
+#
+# The index names the image, the image's digest is in webview/plugin.json, and
+# the recovery holds both to what it reads. Nothing here is arm64 hardware: the
+# payload is cross-compiled, so the runner only has to be a machine the NDK can
+# run on. It is x86_64 because the NDK's Linux package is x86_64-only (the arm64
+# runner the old debootstrap build needed is no longer needed, and would not be
+# able to execute the toolchain).
+#
+# A push to main builds. It also publishes, when the version in
+# webview/plugin.json has no Release yet: bumping the version is the release,
+# and re-running a version that is already out only rebuilds.
+
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "The plugin's version, as the tag and the file name will say"
-        required: true
-        default: "1.0"
+        description: 版本号（留空 = 用 webview/plugin.json 里的）
+        required: false
+        default: ""
       publish:
-        description: "Attach the image to a release, or only build it and keep the artifact"
+        description: 强制建 Release（默认：webview/plugin.json 的版本还没有 Release 时就发）
         type: boolean
         required: false
         default: false
+      runner:
+        description: 构建机（NDK 的 Linux 包只有 x86_64，别改成 arm）
+        required: false
+        default: ubuntu-24.04
+  push:
+    branches: [main]
+    paths:
+      - webview/**
+      - tools/**
+      - .github/workflows/webview.yml
 
 permissions:
   contents: write
 
+concurrency:
+  group: webview-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
-    # debootstrap for arm64 wants to run arm64 code; a native runner costs
-    # nothing and avoids qemu entirely.
-    runs-on: ubuntu-24.04-arm
+    name: 构建 webview 插件
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build the rootfs and pack it
-        run: |
-          chmod +x webview/build.sh
-          OUT="webview-${{ inputs.version }}-arm64.erofs" webview/build.sh
-
-      - name: Write the index Skyward reads
+      # The failure this stops is a runner that cannot execute the toolchain at
+      # all, which would otherwise surface as "cannot execute binary file" from
+      # somewhere inside cargo. The NDK's Linux package is x86_64-only, so an
+      # arm64 runner cannot run cargo-ndk, however much it looks like it should.
+      - name: 确认这台构建机能跑 NDK
         run: |
           set -euo pipefail
-          IMAGE="webview-${{ inputs.version }}-arm64.erofs"
-          SHA=$(sha256sum "$IMAGE" | cut -d' ' -f1)
-          SIZE=$(stat -c %s "$IMAGE")
-          URL="https://github.com/${{ github.repository }}/releases/download/webview-${{ inputs.version }}/$IMAGE"
-          MANIFEST=$(cat webview/manifest.json)
-          python3 - "$MANIFEST" "$SHA" "$SIZE" "$URL" <<'PY' > plugins.json
-          import json, sys
-          manifest, sha, size, url = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
-          plugin = json.loads(manifest)
-          plugin["name"] = "webview"
-          plugin["payload"] = {
-              "url": url,
-              "sha256": sha,
-              "size": size,
-              "format": "erofs",
-              "program": "/opt/skyward/start.sh",
-          }
-          json.dump({"version": 1, "plugins": [plugin]}, sys.stdout, ensure_ascii=False, indent=2)
-          PY
-          cat plugins.json
+          arch=$(uname -m)
+          case "$arch" in
+            x86_64|amd64) echo "runner $arch，NDK 能跑" ;;
+            *)
+              echo "::error::NDK 的 Linux 包只有 x86_64（https://developer.android.com/ndk/downloads），$arch 上跑不了 cargo-ndk；用 ubuntu-24.04。交叉编译不需要 arm 机器。"
+              exit 1
+              ;;
+          esac
 
-      - name: Publish the image and the index
-        if: inputs.publish
+      # The toolchain the pinned upstream asks for: rust-toolchain.toml there
+      # says `stable`, with the target below.
+      - name: 装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      # Only the registry is cached: the crate is built inside .vendor/skyward,
+      # which webview/build.sh creates, so there is no workspace to key a cache
+      # on before the build runs.
+      - name: 缓存 cargo 的下载
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('webview/crate/Cargo.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # The NDK the recovery itself is built with, so the program links against
+      # the same bionic the host already has in memory.
+      - name: 装 NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r29
+          add-to-path: false
+
+      - name: 让 cargo-ndk 找到 NDK
+        env:
+          NDK: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+
+      - name: 装 cargo-ndk 和 mkfs.erofs
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends erofs-utils
+          cargo install cargo-ndk --version 4.1.2 --locked
+
+      - name: 编译、组 payload、打镜像、回填清单
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x webview/build.sh
+          ./webview/build.sh
+
+      - name: 生成插件索引
+        run: python3 tools/index.py
+
+      - name: 读出这次构建的版本
+        id: built
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c 'import json; print(json.load(open("webview/plugin.json", encoding="utf-8"))["version"])')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=webview-$VERSION" >> "$GITHUB_OUTPUT"
+          echo "image=webview-$VERSION-arm64.erofs" >> "$GITHUB_OUTPUT"
+          echo "构建出来的是 $VERSION"
+
+      - name: 留下这次的产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: webview-${{ steps.built.outputs.version }}
+          path: |
+            ${{ steps.built.outputs.image }}
+            webview/plugin.json
+            plugins.json
+
+      # The version is in the manifest, so "a new version" is exactly "a tag
+      # with no Release". That makes a version bump the release, and keeps a
+      # re-run of an existing version to a rebuild only.
+      - name: 决定这次是否发布
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.built.outputs.tag }}
+          ASKED: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [ "${ASKED:-}" = "true" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "手动要求发布 $TAG"
+          elif gh release view "$TAG" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG 已经发布过，这次只构建"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG 还没有 Release，这次发布"
+          fi
+
+      # A Release per version: the image, and the manifest that names it with
+      # the digest this build produced.
+      #
+      # When this runs is decided one step above, not by the trigger: a push to
+      # main publishes when the version in webview/plugin.json has no Release
+      # yet, so bumping the version *is* the release. Re-running a version that
+      # is already out only rebuilds, which is what a review of a broken build
+      # wants.
+      - name: 发布镜像
+        if: steps.decide.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.built.outputs.tag }}
+          IMAGE: ${{ steps.built.outputs.image }}
+          VERSION: ${{ steps.built.outputs.version }}
+        run: |
+          set -euo pipefail
+          NOTES=$(printf '%s\n' \
+            "浏览器插件 $VERSION（插件协议 v1）。" \
+            "" \
+            "在 Skyward 的插件页里安装，或者把 plugin.json 和镜像放进" \
+            "/data/skyward/plugins/webview/ 后重启 recovery。" \
+            "" \
+            "索引：https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/plugins.json")
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG 已经存在，替换资产"
+            gh release upload "$TAG" "$IMAGE" webview/plugin.json --clobber
+          else
+            gh release create "$TAG" "$IMAGE" webview/plugin.json \
+              --title "浏览器 $VERSION" --notes "$NOTES"
+          fi
+
+      # The index has a release of its own, tagged `latest`, because the URL the
+      # recovery asks is one fixed path (`releases/latest/download/plugins.json`)
+      # while the versioned releases come and go. It is published after the
+      # versioned one on purpose: creating a release makes it the newest, so the
+      # `latest` one is flagged last, and flagged again on every run (a new
+      # webview-<version> release would otherwise have taken the marker).
+      - name: 发布索引到 latest
+        if: steps.decide.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="webview-${{ inputs.version }}"
-          IMAGE="webview-${{ inputs.version }}-arm64.erofs"
-          gh release create "$TAG" "$IMAGE" plugins.json \
-            --title "浏览器 ${{ inputs.version }}" \
-            --notes "Skyward 的浏览器插件。在恢复里解密 data、连上网络后，从插件页下载。"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: webview-${{ inputs.version }}
-          path: |
-            webview-*-arm64.erofs
-            plugins.json
+          if ! gh release view latest >/dev/null 2>&1; then
+            gh release create latest --latest --title "插件索引" \
+              --notes "Skyward 读的插件索引：https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/plugins.json"
+          fi
+          gh release upload latest plugins.json --clobber
+          gh release edit latest --latest
+          echo "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/plugins.json"
