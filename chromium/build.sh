@@ -109,6 +109,15 @@ if [ ! -s "$ROOT/usr/lib/chromium/locales/en-US.pak" ]; then
   echo "the locale file Chromium stops without is not in the root" >&2
   exit 1
 fi
+
+# The ffmpeg Chromium ships beside itself is what decodes a <video> on the
+# processor, there being no hardware decoder a recovery can hand it. Without
+# this file Chromium draws a black rectangle and says nothing about why, so a
+# pack that has lost it is not packed at all.
+if [ ! -s "$ROOT/usr/lib/chromium/libffmpeg.so" ]; then
+  echo "the ffmpeg Chromium decodes video with is not in the root" >&2
+  exit 1
+fi
 echo "$VERSION" | $SUDO tee "$WORK/version.txt" >/dev/null
 $SUDO mkdir -p "$ROOT/tmp" "$ROOT/dev/shm" "$ROOT/root" "$ROOT/etc/ssl/certs"
 $SUDO chmod 1777 "$ROOT/tmp" "$ROOT/dev/shm"

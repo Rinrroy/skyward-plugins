@@ -40,10 +40,20 @@ UA="Mozilla/5.0 (Linux; Android 14; Skyward) AppleWebKit/537.36 (KHTML, like Gec
 
 # --disable-features=AsyncDns keeps Chromium from going to 8.8.8.8:53 itself:
 # the recovery has already written the phone's own name servers.
+#
+# Video is decoded on the processor: the recovery draws the screen through the
+# display's own framebuffer device and keeps the GPU, so Chromium gets no
+# hardware decoder and no VA-API to look for one on. --mute-audio keeps it from
+# waiting on an audio device a recovery does not have, and the autoplay policy
+# is set so that a video a page starts on its own is drawn rather than held
+# back until a finger touches it.
 FLAGS="--no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run \
 --no-default-browser-check --disable-background-networking \
 --ignore-certificate-errors --disable-quic --disable-dns-prefetch \
---disable-features=AsyncDns --hide-scrollbars --window-size=412,915 \
+--disable-features=AsyncDns,VaapiVideoDecoder,VaapiVideoEncoder \
+--disable-accelerated-video-decode --disable-accelerated-video-encode \
+--autoplay-policy=no-user-gesture-required --mute-audio \
+--hide-scrollbars --window-size=412,915 \
 --force-device-scale-factor=2 --disable-crash-reporter --disable-breakpad"
 
 URL="${1:-https://cn.bing.com}"
