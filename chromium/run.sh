@@ -11,6 +11,16 @@
 #                        /tmp/skyward-chromium.png
 set -u
 
+# The recovery starts this inside a Linux root, where the recovery's own
+# PATH names nothing that is there: everything below is found from these.
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export HOME=/root
+# The recovery's own TMPDIR points at /data/local/tmp, which is not here, and
+# Chromium asks the temp folder for the socket it keeps its profile under: an
+# answer it cannot reach is the socket it cannot make.
+export TMPDIR=/tmp
+export TMP=/tmp
+
 mkdir -p /tmp /dev/shm
 [ -e /proc/self ] || mount -t proc proc /proc 2>/dev/null || busybox mount -t proc proc /proc 2>/dev/null || true
 [ -e /sys/class ] || mount -t sysfs sysfs /sys 2>/dev/null || busybox mount -t sysfs sysfs /sys 2>/dev/null || true
@@ -19,8 +29,6 @@ mkdir -p /tmp /dev/shm
 [ -e /dev/random ] || { mknod -m 666 /dev/random c 1 8 2>/dev/null || busybox mknod -m 666 /dev/random c 1 8 2>/dev/null || true; }
 [ -s /etc/resolv.conf ] || printf 'nameserver 223.5.5.5\nnameserver 119.29.29.29\n' > /etc/resolv.conf 2>/dev/null || true
 
-export HOME=/root
-export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 export SSL_CERT_DIR=/etc/ssl/certs
 
@@ -41,10 +49,14 @@ FLAGS="--no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run \
 URL="${1:-https://cn.bing.com}"
 
 if [ "${2:-}" = "serve" ]; then
+  # The profile keeps a socket beside itself, and the card this root sits on
+  # is not a filesystem that has them: memory is.
+  mount -t tmpfs tmpfs /tmp 2>/dev/null || busybox mount -t tmpfs tmpfs /tmp 2>/dev/null || true
   rm -rf /tmp/chromium-profile
   # shellcheck disable=SC2086
   exec "$CHROMIUM" --headless=new $FLAGS \
     --user-agent="$UA" \
+    --enable-logging=stderr --v=0 \
     --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
     --remote-allow-origins='*' \
     --user-data-dir=/tmp/chromium-profile \
