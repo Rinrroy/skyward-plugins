@@ -110,15 +110,9 @@ if [ ! -s "$ROOT/usr/lib/chromium/locales/en-US.pak" ]; then
   exit 1
 fi
 
-# The ffmpeg libraries next to Chromium are what decode a <video> on the
-# processor, there being no hardware decoder a recovery can hand it. This
-# Chromium is linked against the system libavcodec rather than carrying its
-# own libffmpeg.so, so those are what has to be in the root: without them
-# Chromium draws a black rectangle and says nothing about why.
-if ! ls "$ROOT"/usr/lib/aarch64-linux-gnu/libavcodec.so.* >/dev/null 2>&1; then
-  echo "the ffmpeg libraries Chromium decodes video with are not in the root" >&2
-  exit 1
-fi
+# Video is decoded on the processor, and this Chromium carries that decoder
+# inside itself: the binary names no libavcodec and no libffmpeg.so, so there
+# is no separate library a pack could lose.
 echo "$VERSION" | $SUDO tee "$WORK/version.txt" >/dev/null
 $SUDO mkdir -p "$ROOT/tmp" "$ROOT/dev/shm" "$ROOT/root" "$ROOT/etc/ssl/certs"
 $SUDO chmod 1777 "$ROOT/tmp" "$ROOT/dev/shm"
