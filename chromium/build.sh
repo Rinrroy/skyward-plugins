@@ -89,29 +89,31 @@ $SUDO mount -t devpts devpts "$ROOT/dev/pts" 2>/dev/null || true
 
 echo "--- chromium"
 
-# The two packages are fetched here rather than inside the root, because the
-# root is Debian and knows nothing of Raspberry Pi's archive. They are handed
-# to apt by path, so apt still resolves what they depend on (libopenh264-7,
-# libdav1d6, libflac12, libxnvctrl0 and the rest) from the Debian mirror and
-# installs it with them.
+# The browser is Raspberry Pi OS's build, for the codecs it keeps. Its own
+# package cannot be installed, though: chromium-common there depends on a name
+# Debian does not have (zenoty), so apt refuses the pair outright. The root
+# therefore gets Debian's chromium first — that is what brings in every library
+# this browser links against — and then the Pi files are laid over it, which
+# replaces the browser, resources.pak and the locale pack with the 156 ones.
 mkdir -p "$WORK/debs"
 for deb in "chromium_${CHROMIUM_VERSION}_arm64.deb" \
   "chromium-common_${CHROMIUM_VERSION}_arm64.deb"; do
   curl -fsSL -o "$WORK/debs/$deb" "$CHROMIUM_POOL/$deb"
 done
-$SUDO mkdir -p "$ROOT/var/tmp"
-$SUDO cp "$WORK/debs"/*.deb "$ROOT/var/tmp/"
 
 # --no-install-recommends keeps the root to what the browser links against
 # and what it reads: sound servers, avahi and the like are left out.
+# libopenh264-7 is the H.264 decoder the Pi build links, and libxnvctrl0 a
+# library it names that Debian's own chromium never asks for.
 $SUDO chroot "$ROOT" /usr/bin/env DEBIAN_FRONTEND=noninteractive \
   /usr/bin/apt-get update -qq
 $SUDO chroot "$ROOT" /usr/bin/env DEBIAN_FRONTEND=noninteractive \
   /usr/bin/apt-get install -y -qq --no-install-recommends \
-  "/var/tmp/chromium_${CHROMIUM_VERSION}_arm64.deb" \
-  "/var/tmp/chromium-common_${CHROMIUM_VERSION}_arm64.deb" \
-  fonts-noto-cjk fonts-dejavu-core
-$SUDO rm -f "$ROOT/var/tmp"/*.deb
+  chromium libopenh264-7 libxnvctrl0 fonts-noto-cjk fonts-dejavu-core
+
+for deb in "$WORK/debs"/*.deb; do
+  $SUDO dpkg-deb -x "$deb" "$ROOT"
+done
 
 # The whole reason for this build is that it can decode H.264, and it can
 # because it links Cisco's decoder rather than carrying one of its own. If a
@@ -119,6 +121,18 @@ $SUDO rm -f "$ROOT/var/tmp"/*.deb
 # so the pack is not made at all.
 if ! ls "$ROOT"/usr/lib/*/libopenh264.so.* >/dev/null 2>&1; then
   echo "this Chromium has no OpenH264, so it cannot decode H.264" >&2
+  exit 1
+fi
+
+# Laid over Debian's chromium, the Pi binary has to find everything it was
+# linked against; a library left behind would show up on the phone as a
+# browser that never starts.
+missing=$($SUDO chroot "$ROOT" /usr/bin/env \
+  LD_LIBRARY_PATH=/usr/lib/chromium:/usr/lib/aarch64-linux-gnu \
+  /usr/bin/ldd /usr/lib/chromium/chromium 2>/dev/null | grep 'not found' || true)
+if [ -n "$missing" ]; then
+  echo "this Chromium is missing libraries the phone cannot give it:" >&2
+  echo "$missing" >&2
   exit 1
 fi
 
