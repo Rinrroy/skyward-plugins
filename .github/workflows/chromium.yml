@@ -4,6 +4,10 @@ name: chromium
 # in it. It is not a plugin in the sense webview/ is: it is the page drawer
 # the browser installs when the data partition is readable.
 #
+# The Chromium installed into it is Raspberry Pi OS's arm64 build, because
+# that one keeps the proprietary codecs (H.264 through OpenH264, AAC), which
+# is what makes video play. Everything else in the root is Debian bookworm.
+#
 # The NDK is x86_64-only, so the recovery itself builds on ubuntu-24.04; this
 # root has to be arm64 and so builds on the arm64 runner.
 
@@ -12,7 +16,7 @@ on:
     inputs:
       version:
         description: The version to publish
-        default: 1.3
+        default: 1.4
         required: true
   push:
     paths:
@@ -34,13 +38,13 @@ jobs:
       - name: Build the root
         run: |
           version="${{ inputs.version }}"
-          [ -n "$version" ] || version=1.3
+          [ -n "$version" ] || version=1.4
           bash ./chromium/build.sh "$version"
 
       - name: Keep what was built
         run: |
           version="${{ inputs.version }}"
-          [ -n "$version" ] || version=1.3
+          [ -n "$version" ] || version=1.4
           mkdir -p dist
           mv "chromium-$version-arm64.tar.gz" dist/
           mv "chromium-$version-arm64.tar.gz.sha256" dist/
@@ -57,7 +61,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${{ inputs.version }}"
-          [ -n "$version" ] || version=1.3
+          [ -n "$version" ] || version=1.4
           tag="chromium-$version"
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "$tag is already published: the version has to change to publish again"
@@ -65,6 +69,6 @@ jobs:
           fi
           gh release create "$tag" dist/* \
             --title "Chromium $version" \
-            --notes "The full mode's Linux root for the recovery browser: a Debian arm64 file system with Chromium $(cat .work/chromium/version.txt 2>/dev/null || echo '').
+            --notes "The full mode's Linux root for the recovery browser: a Debian arm64 file system with Chromium $(cat .work/chromium/version.txt 2>/dev/null || echo ''), built so that H.264 and AAC decode on the processor.
 
           Put chromium-$version-arm64.tar.gz at /sdcard/Skyward/plugins/ or /sdcard/Download/Skyward/, then install it from the browser's full mode page."

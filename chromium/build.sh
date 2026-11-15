@@ -4,10 +4,11 @@
 #
 # The recovery installs that tarball into its internal storage and runs
 # run.sh inside a chroot, so the root has to be the arm64 one and Chromium
-# has to be the Debian build: the recovery's own bionic cannot load it.
+# has to be a glibc build: the recovery's own bionic cannot load it. The
+# Chromium itself is Raspberry Pi OS's, for the codecs it keeps (below).
 #
 # Runs on an arm64 Linux box (or the arm64 runner in .github/workflows), with
-# debootstrap and sudo available. Needs about 3 GB of disk.
+# debootstrap, curl and sudo available. Needs about 4 GB of disk.
 #
 #   ./chromium/build.sh 1.0
 #
@@ -24,6 +25,15 @@ VERSION="${1:-1.0}"
 ARCH=arm64
 SUITE=bookworm
 MIRROR="${MIRROR:-http://deb.debian.org/debian}"
+# Raspberry Pi OS builds this Chromium with the proprietary codecs left in:
+# H.264 decodes through Cisco's OpenH264, which is why the binary depends on
+# libopenh264-7, and AAC through the decoder it carries itself. Debian cannot
+# ship those, so its build answers "no" to every MP4 the pages offer. The rest
+# of the browser is the same, it is still arm64 glibc (it asks for 2.35, and
+# bookworm has 2.36), and the libraries it newly needs are all in bookworm
+# main, so apt inside the new root can resolve them.
+CHROMIUM_VERSION="156.0.8078.79-1~deb12u1+rpt1"
+CHROMIUM_POOL="http://archive.raspberrypi.com/debian/pool/main/c/chromium"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TOP="$(cd "$HERE/.." && pwd)"
 WORK="${WORK:-$TOP/.work/chromium}"
@@ -79,13 +89,38 @@ $SUDO mount -t devpts devpts "$ROOT/dev/pts" 2>/dev/null || true
 
 echo "--- chromium"
 
+# The two packages are fetched here rather than inside the root, because the
+# root is Debian and knows nothing of Raspberry Pi's archive. They are handed
+# to apt by path, so apt still resolves what they depend on (libopenh264-7,
+# libdav1d6, libflac12, libxnvctrl0 and the rest) from the Debian mirror and
+# installs it with them.
+mkdir -p "$WORK/debs"
+for deb in "chromium_${CHROMIUM_VERSION}_arm64.deb" \
+  "chromium-common_${CHROMIUM_VERSION}_arm64.deb"; do
+  curl -fsSL -o "$WORK/debs/$deb" "$CHROMIUM_POOL/$deb"
+done
+$SUDO mkdir -p "$ROOT/var/tmp"
+$SUDO cp "$WORK/debs"/*.deb "$ROOT/var/tmp/"
+
 # --no-install-recommends keeps the root to what the browser links against
 # and what it reads: sound servers, avahi and the like are left out.
 $SUDO chroot "$ROOT" /usr/bin/env DEBIAN_FRONTEND=noninteractive \
   /usr/bin/apt-get update -qq
 $SUDO chroot "$ROOT" /usr/bin/env DEBIAN_FRONTEND=noninteractive \
   /usr/bin/apt-get install -y -qq --no-install-recommends \
-  chromium fonts-noto-cjk fonts-dejavu-core
+  "/var/tmp/chromium_${CHROMIUM_VERSION}_arm64.deb" \
+  "/var/tmp/chromium-common_${CHROMIUM_VERSION}_arm64.deb" \
+  fonts-noto-cjk fonts-dejavu-core
+$SUDO rm -f "$ROOT/var/tmp"/*.deb
+
+# The whole reason for this build is that it can decode H.264, and it can
+# because it links Cisco's decoder rather than carrying one of its own. If a
+# future archive leaves this out, the pack would look fine and play nothing,
+# so the pack is not made at all.
+if ! ls "$ROOT"/usr/lib/*/libopenh264.so.* >/dev/null 2>&1; then
+  echo "this Chromium has no OpenH264, so it cannot decode H.264" >&2
+  exit 1
+fi
 
 cleanup
 trap - EXIT
@@ -110,9 +145,10 @@ if [ ! -s "$ROOT/usr/lib/chromium/locales/en-US.pak" ]; then
   exit 1
 fi
 
-# Video is decoded on the processor, and this Chromium carries that decoder
-# inside itself: the binary names no libavcodec and no libffmpeg.so, so there
-# is no separate library a pack could lose.
+# Video is decoded on the processor. H.264 comes through OpenH264 and AAC
+# through the decoder inside the binary; VP8, VP9 and AV1 have always worked.
+# Those two are what nearly every mobile site serves, which is why the pack
+# uses this build of Chromium rather than Debian's.
 echo "$VERSION" | $SUDO tee "$WORK/version.txt" >/dev/null
 $SUDO mkdir -p "$ROOT/tmp" "$ROOT/dev/shm" "$ROOT/root" "$ROOT/etc/ssl/certs"
 $SUDO chmod 1777 "$ROOT/tmp" "$ROOT/dev/shm"
